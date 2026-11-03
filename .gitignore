@@ -1,0 +1,12 @@
+# PyCharm ayarları
+.idea/
+
+# Python sanal ortamları
+.venv/
+venv/
+ENV/
+
+# Python önbellek dosyaları
+__pycache__/
+*.py[cod]
+*$py.class

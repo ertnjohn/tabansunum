@@ -1,4 +1,4 @@
-﻿\xEF\xBB\xBF/* =====================================================================
+﻿/* =====================================================================
    02_metadonnees.sql  -  Metadonnees techniques, dictionnaire, lignage
 
    A executer APRES 01_schema.sql (AdventureWorks doit etre restauree
@@ -19,7 +19,7 @@ GO
 /* =====================================================================
    PARTIE 1 - Metadonnees techniques des cinq tables sources
    ===================================================================== */
-USE AdventureWorks;
+USE AdventureWorks2022;
 GO
 
 DECLARE @sources TABLE (SchemaSource SYSNAME, TableSource SYSNAME);

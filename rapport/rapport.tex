@@ -1,0 +1,304 @@
+% Rapport de résultats -- Métadonnées, ETL / ELT et capture des changements
+% Compilation : xelatex rapport.tex (deux fois) ; pdflatex fonctionne aussi si babel-french est installé.
+% Images dans captures/ (C01.png à C12.png).
+\documentclass[9pt,a4paper]{article}
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[utf8]{inputenc}
+  \usepackage[T1]{fontenc}
+  \usepackage{lmodern}
+  \usepackage[french]{babel}
+\else
+  \usepackage{fontspec}
+  \usepackage{polyglossia}
+  \setmainlanguage{french}
+\fi
+\usepackage[a4paper,margin=1.35cm]{geometry}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage{booktabs,tabularx,array}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+
+\captionsetup{font=small,labelfont=bf}
+\setlist{noitemsep,topsep=2pt,leftmargin=1.3em}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{2.5pt}
+\renewcommand{\arraystretch}{1.08}
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.5em}{}
+\titlespacing*{\section}{0pt}{8pt}{2.5pt}
+\titlespacing*{\subsection}{0pt}{5pt}{2pt}
+
+\begin{document}
+
+\begin{center}
+  {\LARGE\bfseries Rapport de résultats}\\[2pt]
+  {\large Métadonnées, ETL / ELT et capture des changements}\\[3pt]
+  Erdem Ertan \textperiodcentered{} Bekir Uzumcu \textperiodcentered{} Eray Aksoy\\
+  Université de Galatasaray --- Novembre 2026
+\end{center}
+
+%==========================================================================
+\section{Synthèse de l'article et lien avec notre projet}
+
+\subsection{L'article en bref}
+
+\paragraph{Problème.} Mekterovi\'c, Brki\'c et Baranovi\'c~\cite{mekterovic2011} partent d'un constat : les tests des procédures ETL sont écrits sur mesure pour chaque entrepôt et se réutilisent très peu. Ils proposent une procédure générique de test d'intégration dont la question centrale est « \emph{all counts match} » : les données extraites ont-elles bien été chargées, et sont-elles exactes ? La qualité visée est l'exactitude et la fiabilité entre les sources relationnelles et l'entrepôt ; les erreurs déjà présentes dans la source sont hors périmètre.
+
+\paragraph{Méthode.} L'ETL est traité comme une boîte noire : on compare seulement ses entrées et ses sorties, en trois points (sources SRC, zone de staging SA, entrepôt DW). Un système de test, qui ne fait que lire, comprend un sous-système de comptage (CS : combien d'enregistrements manquent ou sont en trop ?) et un sous-système de différences (DS : lesquels ?). Hypothèses : un entrepôt dimensionnel, des sources relationnelles, et chaque fait traçable vers un seul enregistrement source (tables agrégées et instantanés exclus).
+
+\paragraph{Lignage.} Une dimension contient déjà la clé métier (BK). Pour une table de faits, où les clés étrangères sont remplacées par des clés de substitution, l'article ajoute une clé $SK_{FT}$ et une table de lignage $linFt=\{SK_{FT},BK\}$, remplie au chargement au moyen d'une table temporaire scindée en deux projections. Deux requêtes génériques en découlent : les enregistrements manquants (présents dans la source filtrée $st'$, absents de l'entrepôt) et les enregistrements en trop (clés sans équivalent dans la source, ou faits sans entrée dans $linFt$).
+
+\paragraph{Segmentation et comptage.} Comparer de gros ensembles est coûteux : la segmentation compte par groupes (typiquement année $\rightarrow$ mois $\rightarrow$ jour) et ne « fore » que les segments en désaccord, ce qui donne un filtre de sélection. Un COUNT seul laisse passer des erreurs qui s'annulent ; on ajoute d'autres agrégats (SUM). Le CS suit les comptages d'un chargement à l'autre (seuil : nouveau comptage $>t\times$ comptage précédent) ; en chargement incrémental, seules les données incrémentales sont segmentées.
+
+\paragraph{CDC (section~6, tableaux~4 et~5).} Avec une dimension de type~2, les comptages de la source et de la dimension diffèrent légitimement : un \emph{update} ajoute une ligne (tableau~5). Ces écarts attendus sont journalisés (tables rDiff : clé métier, clé de substitution, cause) pour ne pas être pris pour des erreurs ; les tables iDiff recensent les enregistrements manquants ou en trop.
+
+\paragraph{Étude de cas et limites.} Sur l'entrepôt HEIS (Croatie), la procédure a détecté des écarts dans 9~tables sur 89 ; la cause était une incompatibilité de plages de dates entre la source Informix et SQL Server~2000 (dates antérieures à 1753). Limites annoncées : deux hypothèses (modèle dimensionnel, sources relationnelles), une vérification partielle (comptages et montants de base) et une mise en œuvre partielle (CS de la phase extraction/CDC).
+
+\subsection{Lien avec notre projet}
+
+\paragraph{La procédure s'applique-t-elle à notre data mart ?} Oui, avec des nuances. Sur le chemin ELT (\texttt{AdventureWorks2022} $\rightarrow$ \texttt{stg} $\rightarrow$ \texttt{dm}), les trois points de comparaison existent : la méthode s'applique pleinement. Sur le chemin ETL, il n'y a pas de zone de staging (les transformations se font en mémoire avec \texttt{pandas}) : on ne dispose que de deux points, \texttt{AdventureWorks2022} et \texttt{dm}, et l'application est partielle.
+
+\paragraph{Lignage.} Pour la dimension, \texttt{DimProduit} conserve \texttt{ProductID} et \texttt{CodeProduit} (clé métier). Pour les faits, l'énoncé prévoit déjà les colonnes \texttt{NumCommande} et \texttt{NumLigne} ; nous en avons fait la clé primaire de \texttt{FaitVente}, soit (\texttt{SalesOrderID}, \texttt{SalesOrderDetailID}), la clé métier de la ligne source. Le lignage est donc contenu dans la table de faits : c'est une adaptation de l'article, qui rend la table $linFt$ inutile.
+
+\paragraph{Tableau~5 et nos règles de gestion.} Le tableau suivant confronte les effets des opérations à la source décrits par l'article à nos règles.
+
+\smallskip
+\begingroup\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{3.6cm}>{\raggedright\arraybackslash}p{4.6cm}X@{}}
+\toprule
+Opération à la source & Tableau~5 de l'article & Notre règle \\
+\midrule
+Insert & Insert dans les dimensions et les faits & Nouveau produit : première version ; nouvelle ligne de commande : ligne de fait \\
+Update d'un attribut SCD~2 (prix, sous-catégorie) & Dimension de type~2 : \textbf{Insert} & Clôture de la version courante et ouverture d'une nouvelle version \\
+Update d'un attribut SCD~1 (nom) ou d'une ligne de commande & Dimension de type~1 : Update ; faits : Update & Nom écrasé dans toutes les versions ; fait mis à jour (quantité, montant) \\
+Delete d'une ligne de commande & Faits : Delete ou None & Fait supprimé, nombre de suppressions journalisé (choix : Delete) \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+Nos règles sont cohérentes avec le tableau~5. Le Delete d'une ligne de dimension n'est pas exercé par le scénario.
+
+\paragraph{Limites pour notre projet et ce qu'il faudrait ajouter.}
+\begin{itemize}
+  \item \emph{Chemin ETL :} pour appliquer pleinement la méthode, il faudrait matérialiser un jeu de données intermédiaire ; à défaut, on compare directement la source et \texttt{dm}.
+  \item \emph{Versions SCD~2 :} comparer des clés métier ne vérifie pas que chaque fait est rattaché à la bonne version de produit. Il faut compléter par un test sur les intervalles de validité (\texttt{DateDebut}, \texttt{DateFin}), ce qui est précisément l'enjeu du produit~P (sections~4 à~6).
+  \item \emph{Écarts attendus :} \texttt{meta.JournalChargement} conserve les comptages par exécution (lignes lues, insérées, mises à jour, supprimées, rejetées), ce qui rappelle le suivi du CS ; il ne détaille pas, comme les tables rDiff, la clé et la cause de chaque écart.
+  \item \emph{CDC et Change Tracking :} l'article raisonne sur un CDC générique et ne distingue pas les deux mécanismes de SQL Server.
+\end{itemize}
+
+%==========================================================================
+\section{Conception du data mart, métadonnées et règles SCD}
+
+\subsection{Modèle et grain}
+
+Le processus métier est la vente et le grain est une ligne de commande (une ligne de \texttt{Sales.SalesOrderDetail}). Les deux bases, \texttt{DM\_Ventes\_CDC} et \texttt{DM\_Ventes\_CT}, ont les mêmes schémas \texttt{dm} (trois tables) et \texttt{meta} ; \texttt{DM\_Ventes\_CT} contient en plus le schéma \texttt{stg}, copie brute de cinq tables sources pour l'ELT.
+
+\noindent\begin{minipage}[t]{0.60\textwidth}
+\vspace{0pt}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{2.1cm}X@{}}
+\toprule
+Table & Contenu \\
+\midrule
+\texttt{DimDate} & Clé \texttt{CleDate} (AAAAMMJJ) ; \texttt{Date}, \texttt{Annee}, \texttt{Trimestre}, \texttt{Mois}, \texttt{NomMois}, \texttt{Jour}, \texttt{JourSemaine}. Une ligne par jour du 2010-01-01 au 2030-12-31 (7\,670 lignes), générée en Python. \\
+\addlinespace
+\texttt{DimProduit} & Clé \texttt{CleProduit} (IDENTITY) ; \texttt{ProductID}, \texttt{CodeProduit}, \texttt{Nom}, \texttt{SousCategorie}, \texttt{Categorie}, \texttt{PrixCatalogue}, \texttt{DateDebut}, \texttt{DateFin}, \texttt{EstCourant}. Contraintes : \texttt{DateFin} $>$ \texttt{DateDebut} ; \texttt{EstCourant} = 1 si et seulement si \texttt{DateFin} est NULL ; index unique filtré (une seule version courante par produit). \\
+\addlinespace
+\texttt{FaitVente} & Clé (\texttt{NumCommande}, \texttt{NumLigne}) ; \texttt{CleDate}, \texttt{CleProduit} (clés étrangères), \texttt{Quantite}, \texttt{PrixUnitaire}, \texttt{Montant} $=$ \texttt{Quantite} $\times$ \texttt{PrixUnitaire}. \\
+\bottomrule
+\end{tabularx}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.37\textwidth}
+\vspace{0pt}
+\includegraphics[width=\linewidth]{captures/C02.png}
+\captionof{figure}{Diagramme du data mart (C02).}
+\end{minipage}
+
+Une vente est rattachée à la version de produit valide à la date de la commande : \texttt{DateDebut} $\leq$ \texttt{OrderDate} et (\texttt{DateFin} $>$ \texttt{OrderDate} ou \texttt{DateFin} est NULL).
+
+\subsection{Règles SCD}
+
+\begingroup\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{3.6cm}>{\raggedright\arraybackslash}p{2.3cm}X@{}}
+\toprule
+Élément & Règle & Traitement \\
+\midrule
+Prix catalogue & SCD type~2 & Chaque changement crée une nouvelle version \\
+Sous-catégorie & SCD type~2 & Les ventes sont analysées selon la sous-catégorie valide à la date de la vente \\
+Nom du produit & SCD type~1 & Un changement est une correction : la valeur est écrasée dans toutes les versions \\
+Ligne de commande supprimée & --- & La ligne de fait est supprimée et le nombre de suppressions est journalisé \\
+Ligne de commande modifiée & --- & La ligne de fait est mise à jour (quantité, montant) \\
+Produit sans sous-catégorie & --- & Rattaché à la sous-catégorie et à la catégorie « Inconnu » \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+Date de début d'une nouvelle version : avec CDC (\texttt{07\_incremental\_cdc.py}), l'heure réelle du changement via \texttt{sys.fn\_cdc\_map\_lsn\_to\_time(\_\_\$start\_lsn)} ; avec Change Tracking (\texttt{08\_incremental\_ct.py}), cette information n'existe pas et la date/heure du chargement est utilisée (conséquences discutées aux sections~4 et~5).
+
+\subsection{Choix de conception}
+
+\begingroup\small
+\begin{tabularx}{\textwidth}{@{}c>{\raggedright\arraybackslash}p{5.2cm}X@{}}
+\toprule
+\# & Choix & Justification \\
+\midrule
+1 & \texttt{DateFin} = NULL pour la version courante (\texttt{EstCourant} = 1) & Sens clair : « pas encore terminée » (9999-12-31 était une alternative valable) \\
+2 & \texttt{DateDebut} et \texttt{DateFin} en \texttt{DATETIME2(3)} & Dans la partie~2, les transactions sont séparées de quelques secondes : un type \texttt{DATE} ne les distinguerait pas \\
+3 & Première version de chaque produit : \texttt{DateDebut} = 2010-01-01 & Les ventes anciennes (2011--2014) sont rattachées à une version, et l'ETL et l'ELT produisent la même valeur (test \texttt{EXCEPT}) \\
+4 & \texttt{CleDate} = année $\times$ 10\,000 + mois $\times$ 100 + jour & Calculée directement à partir de la date, identique dans les deux chemins \\
+5 & Prix et montants en \texttt{MONEY} ; \texttt{Decimal} en Python (jamais \texttt{float}) & Même type que la source ; un \texttt{float} introduirait des écarts d'arrondi qui fausseraient l'\texttt{EXCEPT} \\
+6 & Clé de \texttt{FaitVente} = (\texttt{NumCommande}, \texttt{NumLigne}) & Retrouver la ligne en chargement incrémental ; lignage intégré (section~1.2) \\
+7 & Noms de colonnes en français, sans accents & Cohérence avec l'énoncé \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+Lors du chargement initial, \texttt{Montant} est calculé par \texttt{Quantite} $\times$ \texttt{PrixUnitaire} ; dans les scripts incrémentaux \texttt{07\_incremental\_cdc.py} et \texttt{08\_incremental\_ct.py}, le calcul intègre \texttt{UnitPriceDiscount} (\texttt{qty * unit\_price * (1 - discount)}).
+
+\subsection{Métadonnées}
+
+\begingroup\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.4cm}>{\raggedright\arraybackslash}p{4.8cm}X@{}}
+\toprule
+Type & Table ou source & Contenu \\
+\midrule
+Techniques & Requêtes sur \texttt{INFORMATION\_SCHEMA} et les vues \texttt{sys} (non saisies à la main) & Colonnes, types, clés et nombre de lignes des cinq tables sources \\
+Métier & \texttt{meta.DictionnaireDonnees} (et \texttt{sp\_addextendedproperty}) & Définition métier des 25 colonnes du data mart \\
+Lignage & \texttt{meta.MappingColonnes} & Tables et colonnes sources, règle de transformation : 25 lignes dans la base CDC, 44 dans la base CT (\texttt{dm} $\leftarrow$ \texttt{stg} et \texttt{stg} $\leftarrow$ AdventureWorks, « copie brute ») \\
+Opérationnelles & \texttt{meta.JournalChargement} & Numéro d'exécution, méthode (ETL, ELT, CDC, CT), début, fin, lignes lues, insérées, mises à jour, supprimées, rejetées, statut, message \\
+Contrôle & \texttt{meta.EtatCDC}, \texttt{meta.EtatCT} & Dernier LSN traité, dernière version Change Tracking traitée, pour chaque table source \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+La règle de \texttt{DateDebut} est documentée différemment dans les deux bases (heure du changement pour CDC, date du chargement pour CT). Le mapping et un extrait du dictionnaire figurent en annexe~A (C03).
+
+%==========================================================================
+\section{Comparaison ETL / ELT, chiffrée}
+
+Lors du chargement initial, les deux chemins traitent le même volume de données : 153\,327 lignes lues au total dans les cinq tables sources, 7\,670 jours dans \texttt{dm.DimDate}, 504 lignes dans \texttt{dm.DimProduit} et 121\,317 lignes dans \texttt{dm.FaitVente} (121\,821 lignes insérées dans \texttt{DimProduit} + \texttt{FaitVente}).
+
+\begingroup\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4.2cm}XX@{}}
+\toprule
+Critère & ETL (\texttt{03\_etl.py}) & ELT (\texttt{04\_elt.py} + \texttt{04\_elt.sql}) \\
+\midrule
+Temps d'exécution initial & \textbf{1,94 s} (extraction + transformations \texttt{pandas} + chargement) & \textbf{1,73 s} au total : \textbf{1,54 s} de copie brute vers \texttt{stg} (\texttt{04\_elt.py}) + \textbf{0,19 s} (186 ms) de transformation SQL (\texttt{04\_elt.sql}) \\
+Volume de code & 154 lignes Python & 128 lignes Python (\texttt{04\_elt.py}) + 124 lignes T-SQL (\texttt{04\_elt.sql}) = 252 lignes \\
+Lieu des transformations & En mémoire dans Python (\texttt{pandas} / \texttt{Decimal}) hors SQL Server & Dans SQL Server en T-SQL (\texttt{stg} $\rightarrow$ \texttt{dm}) \\
+Conservation des données brutes & Non : pas de schéma \texttt{stg}, données transformées à la volée & Oui : copie brute conservée dans \texttt{stg.*} \\
+Relance si une règle change & Relancer l'ETL complet depuis la source & Relancer uniquement \texttt{04\_elt.sql} depuis \texttt{stg} sans solliciter la source \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+L'ELT est légèrement plus rapide sur le chargement initial (1,73 s contre 1,94 s) et surtout plus souple en cas d'évolution des règles de transformation grâce à la conservation de \texttt{stg}, au prix d'un espace de stockage supplémentaire et d'un code réparti entre Python et T-SQL.
+
+%==========================================================================
+\section{Déroulement des chargements incrémentaux et difficultés rencontrées}
+
+Après l'activation de CDC et de Change Tracking via \texttt{05\_activation\_cdc\_ct.sql} (laissé intact) et l'initialisation des curseurs via \texttt{05b\_init\_etat.sql}, les scripts de changements ont été exécutés dans l'ordre imposé : \texttt{06a\_changements\_partie1.sql} $\rightarrow$ chargement incrémental CDC (\texttt{07\_incremental\_cdc.py}) $\rightarrow$ chargement incrémental CT (\texttt{08\_incremental\_ct.py}) $\rightarrow$ \texttt{06b\_changements\_partie2.sql} $\rightarrow$ chargement incrémental CDC $\rightarrow$ chargement incrémental CT, suivi d'une relance à vide pour vérifier l'idempotence.
+
+\paragraph{Difficultés et points techniques observés.}
+\begin{itemize}
+  \item \emph{Délai de capture CDC et journalisation d'erreur (C12) :} le travail SQL Server Agent de CDC lit le journal des transactions de façon asynchrone. Dans \texttt{meta.JournalChargement} de \texttt{DM\_Ventes\_CDC}, une exécution intermédiaire (\texttt{IdExecution = 3}) a enregistré le statut \texttt{ERREUR} (erreur ODBC) avant la réussite complète (\texttt{IdExecution = 4} : 37 lignes lues, 34 insérées, 2 mises à jour, 1 supprimée en 0,06 s), validant le mécanisme de journalisation des erreurs.
+  \item \emph{Déclencheurs sur \texttt{SalesOrderHeader} :} les modifications sur \texttt{SalesOrderDetail} déclenchent le recalcul automatique de \texttt{SubTotal} dans \texttt{SalesOrderHeader}, générant des mises à jour visibles dans CDC et CT ; comme le grain de \texttt{FaitVente} est la ligne de commande, ces mises à jour d'en-tête n'ajoutent pas de fausses lignes de fait.
+  \item \emph{Granularité temporelle et calcul de \texttt{Montant} :} \texttt{DimDate.[Date]} étant au niveau jour, la comparaison aux dates de version SCD~2 a été alignée sur la date (\texttt{CAST(... AS DATE)}) dans \texttt{09\_tests.sql} ; par ailleurs, l'écart entre \texttt{Montant} et \texttt{LineTotal} sur certaines lignes provient de la prise en compte de \texttt{UnitPriceDiscount} dans \texttt{LineTotal} et dans les scripts incrémentaux.
+\end{itemize}
+
+%==========================================================================
+\section{Tableau de comparaison CDC / Change Tracking}
+
+\begingroup\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{4.4cm}>{\raggedright\arraybackslash}p{6.2cm}X@{}}
+\toprule
+Critère & CDC & Change Tracking \\
+\midrule
+Qu'est-ce qui est capturé ? & Anciennes et nouvelles valeurs des colonnes suivies via \texttt{cdc.fn\_cdc\_get\_all\_changes\_*} (opérations 1 à 4) & Uniquement qu'une ligne a changé (clé primaire et opération \texttt{I}/\texttt{U}/\texttt{D}) ; il faut joindre la table source pour lire les valeurs actuelles \\
+L'heure du changement est-elle connue ? & Oui, via \texttt{sys.fn\_cdc\_map\_lsn\_to\_time(\_\_\$start\_lsn)} & Non, l'horodatage exact du changement n'est pas fourni (seule la version est suivie) \\
+Les deux changements de prix de P (partie~2) sont-ils visibles ? & Oui, les deux hausses de +5\,\% successives apparaissent dans l'historique CDC & Non, seul l'état final de la ligne après les deux modifications est visible \\
+À quelle version de P la vente du changement~8 est-elle rattachée ? & À la version intermédiaire active au moment de la commande (entre les deux hausses de prix) & Rattachée à la version construite à la date du chargement selon l'état final capturé, sans l'historique intermédiaire \\
+Quelles informations obtient-on pour une ligne supprimée ? & Les anciennes valeurs des colonnes de la ligne supprimée (\texttt{\_\_\$operation} = 1) & Uniquement la clé primaire de la ligne supprimée et l'opération \texttt{D} \\
+Faut-il SQL Server Agent ? & Oui, indispensable pour les travaux de capture (\emph{capture}) et de nettoyage (\emph{cleanup}) & Non, ne dépend pas de SQL Server Agent \\
+Que se passe-t-il si la durée de rétention est dépassée ? & Les anciennes entrées sont purgées par le travail \emph{cleanup} ; lire au-delà d'un LSN purgé échoue & Si la version est inférieure à \texttt{CHANGE\_TRACKING\_MIN\_VALID\_VERSION}, un rechargement complet est requis \\
+Charge et stockage supplémentaires sur la source ? & Plus élevée : duplication des changements dans des tables \texttt{cdc.*} et lecture du journal des transactions & Plus légère : métadonnées compactes et suivi minimal des versions \\
+Dans quels cas recommandez-vous chacun ? & Audit, traçabilité historique fine, SCD~2 avec horodatage réel et changements multiples entre deux lots & Synchronisation incrémentale légère lorsque seul l'état courant ou récent compte et que l'on veut éviter la charge CDC \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+%==========================================================================
+\section{Résultats des tests}
+
+Les cinq tests de \texttt{09\_tests.sql} ont été exécutés sur \texttt{DM\_Ventes\_CDC} et \texttt{DM\_Ventes\_CT} :
+\begin{itemize}
+  \item \textbf{Test~1 (complétude et cohérence des lignes de vente) :} 0 anomalie de ligne manquante, de quantité ou de prix unitaire (\texttt{NbFaitVente = 121\,343} contre \texttt{121\,343} dans \texttt{Sales.SalesOrderDetail}, soit \texttt{EcartFait = 0}).
+  \item \textbf{Test~2a et 2b (intégrité SCD~2 sur \texttt{DimProduit}) :} 0 produit sans version courante ou avec plus d'une version courante (\texttt{EstCourant = 1}), et 0 chevauchement d'intervalles (\texttt{DateDebut}, \texttt{DateFin}).
+  \item \textbf{Test~3 (validité temporelle des faits) :} 0 ligne de \texttt{FaitVente} rattachée à une version de produit inactive à la date de commande.
+  \item \textbf{Test~4 (idempotence) :} la relance des chargements incrémentaux sans nouveau changement produit 0 insertion, 0 mise à jour et 0 suppression.
+  \item \textbf{Test~5 (cohérence des volumes) :} \texttt{EcartFait = 0} ; dans \texttt{DM\_Ventes\_CDC}, les opérations incrémentales totalisent 37 lignes (34 insérées, 2 mises à jour, 1 supprimée sur la passe principale) pour 17 lignes dans \texttt{dbo.JournalChangements} (les ventes multi-lignes et mises à jour de header expliquant l'écart de volume).
+\end{itemize}
+
+%==========================================================================
+\section{Recommandation}
+
+Pour la direction d'\textbf{AdventureWorks}, nous recommandons une architecture \textbf{ELT avec Change Data Capture (CDC)} pour le data mart des ventes (ou \textbf{ELT + CT} uniquement pour des tables secondaires non soumises à l'audit historique). L'approche \textbf{ELT} s'impose pour les transformations : l'exécution en T-SQL (\texttt{04\_elt.sql} en 186 ms) est rapide, maintient une copie brute dans \texttt{stg} facilitant l'audit et la rejouabilité en cas de changement de règle, et s'appuie sur le moteur relationnel. Le choix de \textbf{CDC} plutôt que de Change Tracking est déterminant dès lors que les prix, catégories ou ventes intermédiaires font l'objet d'analyses historiques (comme le produit~P au changement~8), car CDC conserve l'historique complet des modifications et l'heure réelle via le LSN, à condition de maintenir SQL Server Agent actif et de surveiller l'espace de stockage.
+
+%==========================================================================
+\section{Déclaration de contribution}
+
+\begingroup\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{2.5cm}>{\raggedright\arraybackslash}p{3.0cm}X>{\raggedright\arraybackslash}p{2.2cm}@{}}
+\toprule
+Membre & Rôle & Contribution & Signature \\
+\midrule
+Erdem Ertan & Modélisation et métadonnées & Conception du data mart et du schéma \texttt{meta} (\texttt{01\_schema.sql}, \texttt{02\_metadonnees.sql}), règles SCD et choix de conception, diagramme (C02) et capture du mapping (C03), partie « article » de la présentation, sections 1 et 2 du rapport. & \\
+\addlinespace
+Bekir Uzumcu & ETL / ELT & Pipelines initial et brut (\texttt{03\_etl.py}, \texttt{04\_elt.py}, \texttt{04\_elt.sql}), génération de \texttt{DimDate}, mesures comparatives ETL/ELT, participation aux sections 3, 4 et 7 du rapport. & \\
+\addlinespace
+Eray Aksoy & Capture des changements et tests & Chargements incrémentaux CDC et CT (\texttt{07\_incremental\_cdc.py}, \texttt{08\_incremental\_ct.py}), initialisation d'état (\texttt{05b\_init\_etat.sql}), tests (\texttt{09\_tests.sql}), captures C01--C12, sections 4 à 7 du rapport et démonstration. & \\
+\bottomrule
+\end{tabularx}
+\endgroup
+
+\begin{thebibliography}{1}
+\bibitem{mekterovic2011} I.~Mekterovi\'c, Lj.~Brki\'c, M.~Baranovi\'c, \emph{A Generic Procedure for Integration Testing of ETL Procedures}, Automatika, 52(2), 2011, p.~169--178.
+\end{thebibliography}
+
+%==========================================================================
+\newpage
+\section*{Annexe A --- Captures d'écran clés}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.62\textwidth]{captures/C01.png}
+  \caption{C01 --- Environnement : édition de SQL Server (Developer) et état du service SQL Server Agent (\texttt{Running}).}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.72\textwidth]{captures/C03.png}
+  \caption{C03 --- Contenu de \texttt{meta.MappingColonnes} et extrait de \texttt{meta.DictionnaireDonnees}.}
+\end{figure}
+
+\clearpage
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.72\textwidth]{captures/C11.png}
+  \caption{C11 --- Résultats des tests d'intégrité (\texttt{09\_tests.sql}).}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.72\textwidth]{captures/C12.png}
+  \caption{C12 --- Journal complet des chargements (\texttt{meta.JournalChargement}) dans les deux data marts.}
+\end{figure}
+
+\end{document}
